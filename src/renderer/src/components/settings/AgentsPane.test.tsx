@@ -24,12 +24,14 @@ import { matchesSettingsSearch } from './settings-search'
 
 const detectedAgentsMock = vi.hoisted(() => ({
   detectedIds: ['claude'] as TuiAgent[] | null,
+  detectedResults: null as { id: TuiAgent; catalogFound: boolean; overrideFound: boolean }[] | null,
   refresh: vi.fn()
 }))
 
 vi.mock('@/hooks/useDetectedAgents', () => ({
   useDetectedAgents: () => ({
     detectedIds: detectedAgentsMock.detectedIds,
+    detectedResults: detectedAgentsMock.detectedResults,
     isLoading: detectedAgentsMock.detectedIds === null,
     isRefreshing: false,
     refresh: detectedAgentsMock.refresh
@@ -120,6 +122,7 @@ function findSwitchRow(node: unknown, ariaLabel: string): ReactElementLike {
 describe('AgentsPane', () => {
   beforeEach(() => {
     detectedAgentsMock.detectedIds = ['claude']
+    detectedAgentsMock.detectedResults = null
     detectedAgentsMock.refresh.mockReset()
     useAppStore.setState({
       settingsSearchQuery: '',
@@ -287,6 +290,30 @@ describe('AgentsPane', () => {
     expect(markup).not.toContain('aria-label="Disable Claude"')
   })
 
+  it('shows custom availability checks ahead of catalog detection', () => {
+    detectedAgentsMock.detectedIds = ['codex']
+    detectedAgentsMock.detectedResults = [{ id: 'codex', catalogFound: true, overrideFound: true }]
+    const markup = renderPane({
+      ...getDefaultSettings('/tmp'),
+      agentCmdOverridesByRuntime: {
+        host: { codex: 'custom-codex --profile work' }
+      }
+    })
+
+    expect(markup).toContain('Custom check')
+    expect(markup).toContain('custom-codex --profile work')
+    expect(markup).toContain('Availability command for')
+  })
+
+  it('shows command controls for not-found agents', () => {
+    detectedAgentsMock.detectedIds = []
+    detectedAgentsMock.detectedResults = []
+    const markup = renderPane(getDefaultSettings('/tmp'))
+
+    expect(markup).toContain('Not found')
+    expect(markup).toContain('aria-label="Expand availability command"')
+  })
+
   it('only toggles agent availability when the segmented value changes', () => {
     const onSetEnabled = vi.fn()
     const control = AgentAvailabilityControl({
@@ -449,5 +476,21 @@ describe('AgentsPane', () => {
 
     writes[1].resolve()
     await secondWrite
+  })
+
+  it('shows a warning message when a custom availability command is not found', () => {
+    detectedAgentsMock.detectedIds = ['codex']
+    detectedAgentsMock.detectedResults = [
+      { id: 'codex', catalogFound: false, overrideFound: false }
+    ]
+    const markup = renderPane({
+      ...getDefaultSettings('/tmp'),
+      agentCmdOverridesByRuntime: {
+        host: { codex: 'invalid-command' }
+      }
+    })
+
+    expect(markup).toContain('Check not found')
+    expect(markup).toContain('Availability command not found')
   })
 })

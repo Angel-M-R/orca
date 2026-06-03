@@ -282,12 +282,12 @@ describe('preflight', () => {
     expect(status.gh).toEqual({ installed: true, authenticated: true })
     expect(execFileAsyncMock).toHaveBeenCalledWith(
       'wsl.exe',
-      ['-d', 'Ubuntu', '--', 'bash', '-lc', "'gh' --version"],
+      ['-d', 'Ubuntu', '--', 'bash', '-ic', "'gh' --version"],
       { encoding: 'utf-8', timeout: 5000 }
     )
     expect(execFileAsyncMock).toHaveBeenCalledWith(
       'wsl.exe',
-      ['-d', 'Ubuntu', '--', 'bash', '-lc', "'gh' auth status"],
+      ['-d', 'Ubuntu', '--', 'bash', '-ic', "'gh' auth status"],
       { encoding: 'utf-8', timeout: 5000 }
     )
   })
@@ -451,7 +451,10 @@ describe('preflight', () => {
 
     registerPreflightHandlers()
 
-    await expect(handlers['preflight:detectAgents']()).resolves.toEqual(['openclaude', 'cursor'])
+    await expect(handlers['preflight:detectAgents']()).resolves.toEqual([
+      { id: 'openclaude', catalogFound: true, overrideFound: false },
+      { id: 'cursor', catalogFound: true, overrideFound: false }
+    ])
   })
 
   it('detects Mistral Vibe from the installed vibe executable', async () => {
@@ -480,6 +483,66 @@ describe('preflight', () => {
     })
 
     await expect(detectInstalledAgents()).resolves.toEqual(['mistral-vibe'])
+  })
+
+  it('reports override-only agents with custom command provenance', async () => {
+    execFileAsyncMock.mockImplementation(async (command, args) => {
+      if (command !== 'which') {
+        throw new Error(`unexpected command ${String(command)}`)
+      }
+      if (String(args[0]) === 'custom-codex') {
+        return { stdout: '/Users/test/bin/custom-codex\n' }
+      }
+      throw new Error('not found')
+    })
+
+    registerPreflightHandlers()
+
+    await expect(
+      handlers['preflight:detectAgents'](undefined, {
+        agentCmdOverrides: { codex: 'custom-codex --profile work' }
+      })
+    ).resolves.toEqual([{ id: 'codex', catalogFound: false, overrideFound: true }])
+  })
+
+  it('prefers custom command provenance when catalog and override commands both exist', async () => {
+    execFileAsyncMock.mockImplementation(async (command, args) => {
+      if (command !== 'which') {
+        throw new Error(`unexpected command ${String(command)}`)
+      }
+      if (String(args[0]) === 'codex' || String(args[0]) === 'custom-codex') {
+        return { stdout: `/Users/test/bin/${String(args[0])}\n` }
+      }
+      throw new Error('not found')
+    })
+
+    registerPreflightHandlers()
+
+    await expect(
+      handlers['preflight:detectAgents'](undefined, {
+        agentCmdOverrides: { codex: 'custom-codex --profile work' }
+      })
+    ).resolves.toEqual([{ id: 'codex', catalogFound: true, overrideFound: true }])
+  })
+
+  it('ignores invalid override grammar while preserving catalog detection', async () => {
+    execFileAsyncMock.mockImplementation(async (command, args) => {
+      if (command !== 'which') {
+        throw new Error(`unexpected command ${String(command)}`)
+      }
+      if (String(args[0]) === 'codex') {
+        return { stdout: '/Users/test/bin/codex\n' }
+      }
+      throw new Error('not found')
+    })
+
+    registerPreflightHandlers()
+
+    await expect(
+      handlers['preflight:detectAgents'](undefined, {
+        agentCmdOverrides: { codex: 'FOO=bar codex' }
+      })
+    ).resolves.toEqual([{ id: 'codex', catalogFound: true, overrideFound: false }])
   })
 
   it('sends aliased detection commands through the SSH remote preflight path', async () => {
@@ -544,7 +607,7 @@ describe('preflight', () => {
     await expect(detectInstalledAgents({ wslDefault: true })).resolves.toEqual(['codex'])
     expect(execFileAsyncMock).toHaveBeenCalledWith(
       'wsl.exe',
-      ['--', 'bash', '-lc', "command -v 'codex'"],
+      ['--', 'bash', '-ic', "command -v 'codex'"],
       { encoding: 'utf-8', timeout: 5000 }
     )
   })
@@ -573,6 +636,7 @@ describe('preflight', () => {
 
     const result = (await handlers['preflight:refreshAgents']()) as {
       agents: string[]
+      agentResults: unknown[]
       addedPathSegments: string[]
       shellHydrationOk: boolean
       pathSource: string
@@ -581,6 +645,7 @@ describe('preflight', () => {
 
     expect(result).toEqual({
       agents: ['opencode'],
+      agentResults: [{ id: 'opencode', catalogFound: true, overrideFound: false }],
       addedPathSegments: ['/Users/test/.opencode/bin'],
       shellHydrationOk: true,
       pathSource: 'shell_hydrate',
@@ -609,6 +674,7 @@ describe('preflight', () => {
 
     const result = (await handlers['preflight:refreshAgents']()) as {
       agents: string[]
+      agentResults: unknown[]
       addedPathSegments: string[]
       shellHydrationOk: boolean
       pathSource: string
@@ -618,6 +684,9 @@ describe('preflight', () => {
     expect(result.shellHydrationOk).toBe(false)
     expect(result.addedPathSegments).toEqual([])
     expect(result.agents).toEqual(['claude'])
+    expect(result.agentResults).toEqual([
+      { id: 'claude', catalogFound: true, overrideFound: false }
+    ])
     // Why: drives the agent_picks `on_path:false` triage in dashboard 1562016.
     // Without these fields we cannot distinguish "hydration failed" from
     // "user genuinely doesn't have the binary."
